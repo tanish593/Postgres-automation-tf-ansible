@@ -1,0 +1,11 @@
+[primary]
+{{ primary_ip }}
+
+[replicas]
+{% for ip in replica_ips %}
+{{ ip }}
+{% endfor %}
+
+[all:vars]
+ansible_user=ubuntu
+ansible_ssh_private_key_file=/terraform/ssh-key.pem

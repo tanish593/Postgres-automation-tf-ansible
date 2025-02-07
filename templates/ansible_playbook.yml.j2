@@ -1,0 +1,88 @@
+- name: Install and Configure PostgreSQL Replication
+  hosts: all
+  become: yes
+  vars:
+    postgres_version: "{{ postgres_version }}"
+    max_connections: "{{ max_connections }}"
+    shared_buffers: "{{ shared_buffers }}"
+    replication_user: "replica"
+    replication_password: "changemeplease"
+    primary_host: "{{ groups['primary'][0] }}"  # First host in primary group
+    replica_hosts: "{{ groups['replicas'] }}"   # List of replica hosts
+    pg_data_dir: "/var/lib/postgresql/{{ postgres_version }}/main"
+
+  tasks:
+    - name: Install PostgreSQL
+      apt:
+        name: "postgresql-{{ postgres_version }}"
+        state: present
+      tags: postgres_install
+
+    - name: Configure PostgreSQL settings
+      lineinfile:
+        path: "/etc/postgresql/{{ postgres_version }}/main/postgresql.conf"
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: '^#?max_connections', line: "max_connections = {{ max_connections }}" }
+        - { regexp: '^#?shared_buffers', line: "shared_buffers = {{ shared_buffers }}" }
+        - { regexp: '^#?wal_level', line: "wal_level = replica" }
+        - { regexp: '^#?archive_mode', line: "archive_mode = on" }
+        - { regexp: '^#?archive_command', line: "archive_command = 'cp %p /var/lib/postgresql/wal_archive/%f'" }
+        - { regexp: '^#?max_wal_senders', line: "max_wal_senders = 10" }
+        - { regexp: '^#?hot_standby', line: "hot_standby = on" }
+      notify: Restart PostgreSQL
+      tags: postgres_config
+
+    - name: Configure replication authentication
+      lineinfile:
+        path: "/etc/postgresql/{{ postgres_version }}/main/pg_hba.conf"
+        line: "host replication {{ replication_user }} 0.0.0.0/0 md5"
+      notify: Restart PostgreSQL
+      tags: pg_hba
+
+    - name: Ensure PostgreSQL listens on all interfaces
+      lineinfile:
+        path: "/etc/postgresql/{{ postgres_version }}/main/postgresql.conf"
+        regexp: '^#?listen_addresses'
+        line: "listen_addresses = '*'"
+      notify: Restart PostgreSQL
+
+    - name: Set up primary server
+      when: inventory_hostname == primary_host
+      block:
+        - name: Create replication user
+          postgresql_user:
+            name: "{{ replication_user }}"
+            password: "{{ replication_password }}"
+            role_attr_flags: "REPLICATION"
+          become_user: postgres
+
+    - name: Set up replica servers
+      when: inventory_hostname in replica_hosts
+      block:
+        - name: Stop PostgreSQL
+          service:
+            name: postgresql
+            state: stopped
+
+        - name: Remove old data directory
+          file:
+            path: "{{ pg_data_dir }}"
+            state: absent
+
+        - name: Clone data from primary
+          command: >
+            pg_basebackup -h {{ primary_host }} -U {{ replication_user }} -D {{ pg_data_dir }} -P -R -X stream -C
+          become_user: postgres
+
+        - name: Start PostgreSQL
+          service:
+            name: postgresql
+            state: started
+
+  handlers:
+    - name: Restart PostgreSQL
+      service:
+        name: postgresql
+        state: restarted
