@@ -1,0 +1,88 @@
+provider "aws" {
+  access_key = "<redacted>"
+  secret_key = "<redacted>"
+  token      = "<redacted>"
+}
+
+resource "aws_vpc" "postgres_vpc" {
+  cidr_block = "10.15.0.0/16"
+}
+
+resource "aws_subnet" "public_subnet" {
+  vpc_id                  = aws_vpc.postgres_vpc.id
+  cidr_block              = "10.15.1.0/24"
+  map_public_ip_on_launch = true
+}
+
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.postgres_vpc.id
+}
+
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.postgres_vpc.id
+}
+
+resource "aws_route" "default_route" {
+  route_table_id         = aws_route_table.public_rt.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.igw.id
+}
+
+resource "aws_security_group" "postgres_sg" {
+  vpc_id = aws_vpc.postgres_vpc.id
+
+  ingress {
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]  # Amazon-owned AMIs
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+}
+
+resource "aws_instance" "primary" {
+  ami             = "${data.aws_ami.amazon_linux.id}"
+  instance_type   = "{{ instance_type }}"
+  subnet_id       = aws_subnet.public_subnet.id
+  security_groups = [aws_security_group.postgres_sg.name]
+  tags = {
+    Name = "Postgres-Primary"
+  }
+}
+
+resource "aws_instance" "replicas" {
+  count           = {{ num_replicas }}
+  ami             = "${data.aws_ami.amazon_linux.id}"
+  instance_type   = "{{ instance_type }}"
+  subnet_id       = aws_subnet.public_subnet.id
+  security_groups = [aws_security_group.postgres_sg.name]
+  tags = {
+    Name = "Postgres-Replica-${count.index + 1}"
+  }
+}  
